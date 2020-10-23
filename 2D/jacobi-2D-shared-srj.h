@@ -26,6 +26,7 @@ void __jacobiGlobalToSharedSRJ(const double * x0Gpu, const double * rhsGpu, cons
             sharedMemory[i + 2 * nPerSubdomain] = rhsGpu[I];
         }
     }
+	__syncthreads();
 }
 
 /* 2 - Update within shared memory */
@@ -92,7 +93,7 @@ void __jacobiSharedToGlobalSRJ(double * x1Gpu, const int subdomainLength_x, cons
 			}
 		}
     }
- 
+
 	/*  Check if y point should be handled by this particular block */
     int Iy = blockIdx.y * (blockDim.y - OVERLAP_Y) + (threadIdx.y + 1);
     if (Iy < nyGrids-1) {
@@ -112,7 +113,6 @@ void __jacobiSharedToGlobalSRJ(double * x1Gpu, const int subdomainLength_x, cons
 			}
 		}
     }
-    __syncthreads();
 
 	/* Define the number of iterations which were performed */
 	int numIters = indexPointerGpu[level+1] - indexPointerGpu[level];
@@ -138,9 +138,10 @@ void __jacobiSharedToGlobalSRJ(double * x1Gpu, const int subdomainLength_x, cons
     }
 
     __syncthreads();
+
 }
-        
-/* Perform one cycle of hierarchichal SRJ */
+
+/* Perform one cycle of hierarchical SRJ */
 __global__
 void _jacobiUpdateSRJ(double * x1Gpu, double * x0Gpu, const double * rhsGpu, const int nxGrids, const int nyGrids, const int OVERLAP_X, const int OVERLAP_Y, const int level, const int * indexPointerGpu, const double * srjSchemesGpu)
 {
@@ -160,6 +161,202 @@ void _jacobiUpdateSRJ(double * x1Gpu, double * x0Gpu, const double * rhsGpu, con
 	/* STEP 3 - MOVE ALL VALUES FROM SHARED MEMORY BACK TO GLOBAL MEMORY */
 	__jacobiSharedToGlobalSRJ(x1Gpu, subdomainLength_x, subdomainLength_y, nxGrids, nyGrids, indexPointerGpu, level, OVERLAP_X, OVERLAP_Y);
 
+}
+
+/* Shifted Implementation */
+
+/* 1 - Global to Shared Transfer Shifted */
+__device__
+void __jacobiGlobalToSharedSRJShifted(const double * x0Gpu, const double * rhsGpu, const int subdomainLength_x, const int subdomainLength_y, const int nxGrids, const int nyGrids, const int OVERLAP_X, const int OVERLAP_Y)
+{
+	/* Define shared memory */
+	extern __shared__ double sharedMemory[];
+	
+	/* Compute global ID of bottomleft corner point handled by specific blockIdx.x, blockIdx.y (serves as useful reference ID point) */
+    int xShift = (blockDim.x/2); 
+	int yShift = (blockDim.y/2);
+	int IxBlockShift = blockIdx.x * (blockDim.x - OVERLAP_X);
+	int IyBlockShift = (blockIdx.y * (blockDim.y - OVERLAP_Y));
+    int idx, idy, I, Ixglobal, Iyglobal;
+    int sharedID = threadIdx.x + threadIdx.y * blockDim.x;
+    int stride = blockDim.x * blockDim.y;
+	int nPerSubdomain = subdomainLength_x * subdomainLength_y;
+	int nDofs = nxGrids * nyGrids;
+
+	for (int i = sharedID; i < nPerSubdomain; i += stride) {
+		/* Compute the global ID of point in the grid */
+		idx = (i % subdomainLength_x); 
+		idy = i/subdomainLength_x; 
+		Ixglobal = xShift + IxBlockShift + idx;
+		Iyglobal = yShift + IyBlockShift + idy;
+		/* Check the x coord of point and use mod if it falls outside of range */
+		if (blockIdx.x == gridDim.x - 1) {
+			if (Ixglobal > nxGrids - 1) {
+				Ixglobal = Ixglobal % nxGrids;
+			}
+		}
+		/* Check the y coord of point and use mod if it falls outside of range */
+		if (blockIdx.y == gridDim.y - 1) {
+			if (Iyglobal > nyGrids - 1) {
+				Iyglobal = Iyglobal % nyGrids;
+			}
+		}
+		I = Ixglobal + Iyglobal * nxGrids; // global ID
+		/* If the global ID is less than number of points, or local ID is less than number of points in subdomain */
+		if (I < nDofs && i < nPerSubdomain) {
+			sharedMemory[i] = x0Gpu[I]; 
+			sharedMemory[i + nPerSubdomain] = x0Gpu[I];
+			sharedMemory[i + 2 * nPerSubdomain] = rhsGpu[I];
+/*			if (blockIdx.x == 1 && blockIdx.y == 1) {
+				printf("In block (%d,%d): sharedMemory[%d] = %f, I = %d, Ixglobal = %d, Iyglobal = %d\n", blockIdx.x, blockIdx.y, i, sharedMemory[i], I, Ixglobal, Iyglobal);
+			}
+*/		}
+	}
+	__syncthreads();
+}
+
+/* 2 - Update within shared memory shifted */
+__device__
+void __jacobiUpdateKernelSRJShifted(const int nxGrids, const int nyGrids, const int subdomainLength_x, const int subdomainLength_y, const int OVERLAP_X, const int OVERLAP_Y, const int level, const int * indexPointerGpu, const double * srjSchemesGpu)
+{
+    /* Create shared memory pointers */
+	extern __shared__ double sharedMemory[];
+    double * x0 = sharedMemory, * x1 = sharedMemory + subdomainLength_x * subdomainLength_y, * x2 = sharedMemory + 2 * subdomainLength_x * subdomainLength_y;
+    const double dx = 1.0 / (nxGrids - 1);
+    const double dy = 1.0 / (nyGrids - 1);
+	double leftX, rightX, topX, bottomX, centerX, rhs;
+
+	/* Define local and global ID in x and y */
+	int ix = threadIdx.x + 1;
+	int iy = threadIdx.y + 1;
+	int i = ix + iy * subdomainLength_x;
+    int xShift = (blockDim.x/2); 
+	int yShift = (blockDim.y/2);
+    int Ix = blockIdx.x * (blockDim.x - OVERLAP_X) + xShift + ix;
+    int Iy = blockIdx.y * (blockDim.y - OVERLAP_Y) + yShift + iy;
+		
+	/* Make adjustments to updated local/global IDs based on the block */
+	if (blockIdx.x == gridDim.x - 1) {	
+		if (ix > blockDim.x / 2) {
+			ix = ix + 2;
+			i = ix + iy * subdomainLength_x;
+			Ix = (blockIdx.x * (blockDim.x - OVERLAP_X) + xShift + ix) % nxGrids;
+		}
+	}	
+	if (blockIdx.y == gridDim.y - 1) {	
+		if (iy > blockDim.y / 2) {
+			iy = iy + 2;
+			i = ix + iy * subdomainLength_x;
+			Iy = (blockIdx.y * (blockDim.y - OVERLAP_Y) + yShift + iy) % nyGrids;
+		}
+	}
+
+	/* Perform one SRJ cycle based on the current level */
+	for (int relaxationParameterID = indexPointerGpu[level]; relaxationParameterID < indexPointerGpu[level+1]; relaxationParameterID++) {
+		/* Update interior points */	
+		if (Ix < nxGrids-1 && Iy < nyGrids-1) {
+			leftX = x0[i-1];
+			rightX = x0[i+1];
+			topX = x0[i+subdomainLength_x];
+			bottomX = x0[i-subdomainLength_x];
+			rhs = x2[i];
+			centerX = x0[i];
+			x1[i] = jacobi2DPoissonRelaxed(leftX, centerX, rightX, topX, bottomX, rhs, dx, dy, srjSchemesGpu[relaxationParameterID]);
+		}
+		__syncthreads();
+		double * tmp = x0; x0 = x1; x1 = tmp;
+	}
+	
+/*		if (blockIdx.x == 0 && blockIdx.y == 0 && threadIdx.x == 0 && threadIdx.y == 0) {
+			for (int i = 0; i < 36; i++) {
+				printf("sharedMemory[%d] = %f\n", i, x0[i]);
+			}
+		}
+*/
+
+}
+
+/* 3 - Shared to Global Transfer shifted */
+__device__
+void __jacobiSharedToGlobalSRJShifted(double * x1Gpu, const int subdomainLength_x, const int subdomainLength_y, const int nxGrids, const int nyGrids, const int * indexPointerGpu, const int level, const int OVERLAP_X, const int OVERLAP_Y)
+{
+	/* Define shared memory */
+	extern __shared__ double sharedMemory[];
+
+	/* Define the amount of shift */
+    int xShift = (blockDim.x/2); 
+    int yShift = (blockDim.y/2); 
+
+    /* Define local and global x coordinate of point to be updated */
+    int ixlocal = threadIdx.x + 1;
+	int Ixglobal = blockIdx.x * (blockDim.x - OVERLAP_X) + xShift + ixlocal;
+ 
+    /* Define local and global y coordinate of point to be updated */
+    int iylocal = threadIdx.y + 1;
+    int Iyglobal = blockIdx.y * (blockDim.y - OVERLAP_Y) + yShift + iylocal;
+
+	/* Define the number of iterations which were performed */
+	int numIters = indexPointerGpu[level+1] - indexPointerGpu[level];
+
+	/* Define nPerSubdomain */
+	int nPerSubdomain = subdomainLength_x * subdomainLength_y;
+
+    /* If point is within bound of points to be handled by particular blockIdx.x, blockIdx.y, then move value over to global memory */   
+	if (blockIdx.x == gridDim.x - 1) {
+		if (ixlocal > blockDim.x / 2) {
+			ixlocal = ixlocal + 2;
+			Ixglobal = (blockIdx.x * (blockDim.x - OVERLAP_X) + xShift + ixlocal) % nxGrids;
+		}
+	}	
+	if (blockIdx.y == gridDim.y - 1) {
+		if (iylocal > blockDim.y / 2) { 
+			iylocal = iylocal + 2;
+			Iyglobal = (blockIdx.y * (blockDim.y - OVERLAP_Y) + yShift + iylocal) % nyGrids;
+		}
+	}	
+	int ilocal = ixlocal + iylocal * subdomainLength_x;
+	int Iglobal = Ixglobal + Iyglobal * nxGrids;
+
+	if ((numIters % 2) == 0) { 
+		x1Gpu[Iglobal] = sharedMemory[ilocal];
+	}
+	else {
+		x1Gpu[Iglobal] = sharedMemory[ilocal + nPerSubdomain];
+	}
+
+    __syncthreads();
+}
+ 
+/* Perform one cycle of hierarchichal SRJ with a shift */
+__global__
+void _jacobiUpdateSRJShifted(double * x1Gpu, double * x0Gpu, const double * rhsGpu, const int nxGrids, const int nyGrids, const int OVERLAP_X, const int OVERLAP_Y, const int level, const int * indexPointerGpu, const double * srjSchemesGpu)
+{
+    /* Move to shared memory */
+    extern __shared__ double sharedMemory[];
+   
+    /* Define useful constants regarding subdomain edge length and number of points within a 2D subdomain */
+    int subdomainLength_x, subdomainLength_y;
+	if (blockIdx.x < gridDim.x - 1) {
+		subdomainLength_x = blockDim.x + 2;
+	}
+	else {
+		subdomainLength_x = blockDim.x + 4;
+	}
+	if (blockIdx.y < gridDim.y - 1) {
+		subdomainLength_y = blockDim.y + 2;
+	}
+	else {
+		subdomainLength_y = blockDim.y + 4;
+	}
+
+    /* STEP 1 - MOVE ALL VALUES TO SHARED MEMORY: Assume no overlap */
+	__jacobiGlobalToSharedSRJShifted(x0Gpu, rhsGpu, subdomainLength_x, subdomainLength_y, nxGrids, nyGrids, OVERLAP_X, OVERLAP_Y);
+    
+    /* STEP 2 - UPDATE ALL INNER POINTS IN EACH BLOCK */
+	__jacobiUpdateKernelSRJShifted(nxGrids, nyGrids, subdomainLength_x, subdomainLength_y, OVERLAP_X, OVERLAP_Y, level, indexPointerGpu, srjSchemesGpu);
+    
+	/* STEP 3 - MOVE ALL VALUES FROM SHARED MEMORY BACK TO GLOBAL MEMORY */
+	__jacobiSharedToGlobalSRJShifted(x1Gpu, subdomainLength_x, subdomainLength_y, nxGrids, nyGrids, indexPointerGpu, level, OVERLAP_X, OVERLAP_Y);
 }
 
 /* SRJ with Shared Memory Implementation */
@@ -199,7 +396,7 @@ double * jacobiSharedSRJ(const double * initX, const double * rhs, const int nxG
     cudaMemcpy(indexPointerGpu, indexPointer, sizeof(int) * numSchemes, cudaMemcpyHostToDevice);
 
     /* Define amount of shared memory needed */
-    const int sharedBytes = 3 * subdomainLength_x * subdomainLength_y * sizeof(double);
+    const int sharedBytes = 3 * (subdomainLength_x + 2) * (subdomainLength_y + 2) * sizeof(double);
 
 	/* Initialize level */
 	int level = 0;
@@ -210,8 +407,13 @@ double * jacobiSharedSRJ(const double * initX, const double * rhs, const int nxG
 	/* Perform cycles of hierarchical SRJ */
 	for (int cycle = 0; cycle < numCycles; cycle++) {
 		/* Perform cycles */
-        _jacobiUpdateSRJ <<<grid, block, sharedBytes>>> (x1Gpu, x0Gpu, rhsGpu, nxGrids, nyGrids, OVERLAP_X, OVERLAP_Y, level, indexPointerGpu, srjSchemesGpu);
-        /* Swap pointers */
+		if (cycle % 2 == 0) {
+    		_jacobiUpdateSRJ <<<grid, block, sharedBytes>>> (x1Gpu, x0Gpu, rhsGpu, nxGrids, nyGrids, OVERLAP_X, OVERLAP_Y, level, indexPointerGpu, srjSchemesGpu);
+		} 
+       	else {
+        	_jacobiUpdateSRJShifted <<<grid, block, sharedBytes>>> (x1Gpu, x0Gpu, rhsGpu, nxGrids, nyGrids, OVERLAP_X, OVERLAP_Y, level, indexPointerGpu, srjSchemesGpu);
+		}
+		/* Swap pointers */
 		{
             double * tmp = x1Gpu; x1Gpu = x0Gpu; x0Gpu = tmp;
         }
@@ -226,7 +428,11 @@ double * jacobiSharedSRJ(const double * initX, const double * rhs, const int nxG
 	/* Copy solution to the CPU */
     double * solution = new double[nDofs];
     cudaMemcpy(solution, x0Gpu, sizeof(double) * nDofs, cudaMemcpyDeviceToHost);
-
+/*	printf("PRINTING SOLUTION\n");
+	for (int i = 0; i < nDofs; i++) {
+		printf("solution(%d) = %f\n", i, solution[i]);
+	}
+*/
     /* Clean up */
     cudaFree(x0Gpu);
     cudaFree(x1Gpu);
