@@ -59,6 +59,52 @@ double * jacobiCpuSRJ(const double * initX, const double * rhs, const int nxGrid
 		/* Compute the residual afterwards */
 		residual_after = residual2DPoisson(x0, rhs, nxGrids, nyGrids);
 		/* Print information at the end of the cycle */
+//		printf("Cycle %d of Level %d complete: The residual is %f\n", cycle, level, residual_after);
+    }
+
+    delete[] x1;
+    return x0;
+}
+
+/* Perform SRJ with the heuristic for selecting  */
+double * jacobiCpuSRJHeuristic(const double * initX, const double * rhs, const int nxGrids, const int nyGrids,  const double * srjSchemes, const int * indexPointer, const int numSchemes, const int numCycles, const int levelSRJ)
+{
+	/* Instantiate variables */
+    double dx = 1.0 / (nxGrids - 1);
+    double dy = 1.0 / (nyGrids - 1);
+    int nDofs = nxGrids * nyGrids;
+    double * x0 = new double[nDofs];
+    double * x1 = new double[nDofs];
+    memcpy(x0, initX, sizeof(double) * nDofs);
+    memcpy(x1, initX, sizeof(double) * nDofs);
+	double leftX, rightX, topX, bottomX, centerX;
+    double residual_before, residual_after; 
+	int level, dof;
+
+	/* Performing SRJ Cycles */
+	for (int cycle = 0; cycle < numCycles; cycle++) {
+		/* Select the next level scheme to use */
+		levelSelect(level, cycle, residual_before, residual_after, numSchemes);
+		/* Compute the residual prior to the cycle */
+		residual_before = residual2DPoisson(x0, rhs, nxGrids, nyGrids);		
+		/* Perform all iterations associated with SRJ cycle on all DOFs */
+    	for (int relaxationParameterID = indexPointer[level]; relaxationParameterID < indexPointer[level+1]; relaxationParameterID++) {
+        	for (int jGrid = 1; jGrid < nyGrids-1; ++jGrid) {
+				for (int iGrid = 1; iGrid < nxGrids-1; ++iGrid) {
+		        	dof = jGrid * nxGrids + iGrid;
+                	leftX = x0[dof - 1];
+					rightX = x0[dof + 1];
+                	topX = x0[dof + nxGrids];
+                	bottomX = x0[dof - nxGrids];
+					centerX = x0[dof];
+					x1[dof] = jacobi2DPoissonRelaxed(leftX, centerX, rightX, topX, bottomX, rhs[dof], dx, dy, srjSchemes[relaxationParameterID]);
+				}
+        	}
+        	double * tmp = x0; x0 = x1; x1 = tmp;
+    	}
+		/* Compute the residual afterwards */
+		residual_after = residual2DPoisson(x0, rhs, nxGrids, nyGrids);
+		/* Print information at the end of the cycle */
 		printf("Cycle %d of Level %d complete: The residual is %f\n", cycle, level, residual_after);
     }
 

@@ -49,7 +49,7 @@ double * jacobiGpuSRJ(const double * initX, const double * rhs, const int nxGrid
     double dx = 1.0 / (nxGrids - 1);
     double dy = 1.0 / (nyGrids - 1);
 	int nDofs = nxGrids * nyGrids;
-	double residual_after;
+	// double residual_after;
 	int level;
 
     /* Allocate memory on the device and copy over variables */
@@ -86,9 +86,9 @@ double * jacobiGpuSRJ(const double * initX, const double * rhs, const int nxGrid
 			}
 		}
     	/* Compute the residual afterwards */
-		residual_after = residualFastGpu2D(residualGpu, x0Gpu, rhsGpu, nxGrids, nyGrids, threadsPerBlock_x, threadsPerBlock_y, nxBlocks, nyBlocks);
+		// residual_after = residualFastGpu2D(residualGpu, x0Gpu, rhsGpu, nxGrids, nyGrids, threadsPerBlock_x, threadsPerBlock_y, nxBlocks, nyBlocks);
 		/* Print information */
-		printf("Cycle %d of Level %d complete: The residual is %f\n", cycle, level, residual_after);
+		// printf("Cycle %d of Level %d complete: The residual is %f\n", cycle, level, residual_after);
 	}
 		
 	/* Write solution from GPU to CPU variable */
@@ -102,6 +102,96 @@ double * jacobiGpuSRJ(const double * initX, const double * rhs, const int nxGrid
 
 	return solution;
 }
+
+/* Perform SRJ on GPU with global memory and heuristic for selecting the next level scheme */
+double * jacobiGpuSRJHeuristic(const double * initX, const double * rhs, const int nxGrids, const int nyGrids, const double * srjSchemes, const int * indexPointer, const int numSchemes, const int numCycles, const int levelSRJ, const int threadsPerBlock_x, const int threadsPerBlock_y)
+{
+	/* Define/Initialize key parameters */
+    double dx = 1.0 / (nxGrids - 1);
+    double dy = 1.0 / (nyGrids - 1);
+	int nDofs = nxGrids * nyGrids;
+	double residual_before, residual_after;
+	int level;
+
+    /* Allocate memory on the device and copy over variables */
+    double * x0Gpu, * x1Gpu, * rhsGpu, * residualGpu;
+    cudaMalloc(&x0Gpu, sizeof(double) * nDofs);
+    cudaMalloc(&x1Gpu, sizeof(double) * nDofs);
+    cudaMalloc(&rhsGpu, sizeof(double) * nDofs);
+    cudaMalloc(&residualGpu, sizeof(double) * nDofs);
+    cudaMemcpy(x0Gpu, initX, sizeof(double) * nDofs, cudaMemcpyHostToDevice);
+    cudaMemcpy(x1Gpu, initX, sizeof(double) * nDofs, cudaMemcpyHostToDevice);
+    cudaMemcpy(rhsGpu, rhs, sizeof(double) * nDofs, cudaMemcpyHostToDevice);
+
+	/* Establish 2D grid and block structures */
+	dim3 block(threadsPerBlock_x, threadsPerBlock_y);
+    int nxBlocks = (int)ceil(nxGrids / (double)threadsPerBlock_x);
+    int nyBlocks = (int)ceil(nyGrids / (double)threadsPerBlock_y);
+	dim3 grid(nxBlocks, nyBlocks);
+
+	/* Perform SRJ cycles */
+	for (int cycle = 0; cycle < numCycles; cycle++) {
+		/* Select which level to use */
+		levelSelect(level, cycle, residual_before, residual_after, numSchemes);
+		/* Obtain residual before performing cycles */
+		residual_before = residualFastGpu2D(residualGpu, x0Gpu, rhsGpu, nxGrids, nyGrids, threadsPerBlock_x, threadsPerBlock_y, nxBlocks, nyBlocks);
+		/* Perform all iterations associated with a given SRJ cycle */
+    	for (int relaxationParameterID = indexPointer[level]; relaxationParameterID < indexPointer[level + 1]; relaxationParameterID++) {
+			/* Jacobi iteration on the GPU */
+        	_jacobiGpuSRJIteration<<<grid, block>>>(x1Gpu, x0Gpu, rhsGpu, nxGrids, nyGrids, dx, dy, srjSchemes[relaxationParameterID]);
+			{
+				double * tmp = x0Gpu; x0Gpu = x1Gpu; x1Gpu = tmp;
+			}
+		}
+    	/* Compute the residual afterwards */
+		residual_after = residualFastGpu2D(residualGpu, x0Gpu, rhsGpu, nxGrids, nyGrids, threadsPerBlock_x, threadsPerBlock_y, nxBlocks, nyBlocks);
+		/* Print information */
+//		printf("Cycle %d of Level %d complete: The residual is %f\n", cycle, level, residual_after);
+	}
+		
+	/* Write solution from GPU to CPU variable */
+	double * solution = new double[nDofs];
+	cudaMemcpy(solution, x0Gpu, sizeof(double) * nDofs, cudaMemcpyDeviceToHost);
+
+	/* Free all memory */
+	cudaFree(x0Gpu);
+	cudaFree(x1Gpu);
+	cudaFree(rhsGpu);
+
+	return solution;
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 __global__
 void _jacobiGpuClassicIteration(double * x1, const double * x0, const double * rhs, const int nxGrids, const int nyGrids, const double dx, const double dy)
