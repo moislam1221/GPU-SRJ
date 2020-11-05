@@ -26,8 +26,8 @@
 #include "Helper/srjSchemes.h"
 
 // #define RUN_CPU_FLAG 1
-#define RUN_GPU_FLAG 1
-// #define RUN_SHARED_FLAG 1
+// #define RUN_GPU_FLAG 1
+#define RUN_SHARED_FLAG 1
 
 // Determine which header files to include based on which directives are active
 #ifdef RUN_CPU_FLAG
