@@ -25,9 +25,9 @@
 #include "Helper/setGPU.h"
 #include "Helper/srjSchemes.h"
 
-#define RUN_CPU_FLAG 1
+// #define RUN_CPU_FLAG 1
 #define RUN_GPU_FLAG 1
-#define RUN_SHARED_FLAG 1
+// #define RUN_SHARED_FLAG 1
 
 // Determine which header files to include based on which directives are active
 #ifdef RUN_CPU_FLAG
@@ -53,7 +53,7 @@ int main(int argc, char *argv[])
     setGPU(gpuToUse);
     
 	/* Initialize initial condition and rhs */
-	const int Mcopies = 1;
+	const int Mcopies = 2;
     int nGrids = nDim + 2;
     double * initX = new double[nGrids * Mcopies];
     double * rhs = new double[nGrids * Mcopies];
@@ -100,14 +100,18 @@ int main(int argc, char *argv[])
 	cudaEventCreate(&start);
 	cudaEventCreate(&stop);
 	cudaEventRecord(start, 0);
- 	// solutionJacobiGpu = jacobiGpuSRJ(initX, rhs, nGrids, srjSchemes, indexPointer, numSchemes, threadsPerBlock, numCycles, levelSRJ);
- 	solutionJacobiGpu = jacobiGpuSRJHeuristic(initX, rhs, nGrids, srjSchemes, indexPointer, numSchemes, threadsPerBlock, numCycles);
+ 	solutionJacobiGpu = jacobiGpuSRJ(initX, rhs, nGrids, srjSchemes, indexPointer, numSchemes, threadsPerBlock, numCycles, levelSRJ, Mcopies);
+ 	// solutionJacobiGpu = jacobiGpuSRJHeuristic(initX, rhs, nGrids, srjSchemes, indexPointer, numSchemes, threadsPerBlock, numCycles);
 	cudaEventRecord(stop, 0);
 	cudaEventSynchronize(stop);
 	cudaEventElapsedTime(&gpuSRJTime, start, stop);
 	gpuJacobiResidual = residual1DPoisson(solutionJacobiGpu, rhs, nGrids);
-	printf("Residual of the Jacobi GPU solution is %f\n", gpuJacobiResidual);
+	printf("Residual of the Jacobi GPU solution is %.15f\n", gpuJacobiResidual);
 	printf("Time needed for SRJ GPU: %f ms\n", gpuSRJTime);
+/*	for (int i = 0; i < Mcopies * nGrids; i++) {
+		printf("solutionJacobiGpu[%d] = %f\n", i, solutionJacobiGpu[i]);	
+	}
+*/
 #endif 
 	
 	/* Shared SRJ Jacobi */
@@ -122,13 +126,17 @@ int main(int argc, char *argv[])
 	cudaEventCreate(&start_shared);
 	cudaEventCreate(&stop_shared);
 	cudaEventRecord(start_shared, 0);	
-	solutionJacobiShared = jacobiSharedSRJShifted(initX, rhs, nGrids, srjSchemes, indexPointer, numSchemes, numSchemeParams, threadsPerBlock, overlap, numCycles, levelSRJ);
+	solutionJacobiShared = jacobiSharedSRJShifted(initX, rhs, nGrids, srjSchemes, indexPointer, numSchemes, numSchemeParams, threadsPerBlock, overlap, numCycles, levelSRJ, Mcopies);
 	cudaEventRecord(stop_shared, 0);	
 	cudaEventSynchronize(stop_shared);
 	cudaEventElapsedTime(&sharedSRJTime, start_shared, stop_shared);
 	sharedJacobiResidual = residual1DPoisson(solutionJacobiShared, rhs, nGrids);
-	printf("Residual of the Jacobi Shared solution is %f\n", sharedJacobiResidual);
+	printf("Residual of the Jacobi Shared solution is %.15f\n", sharedJacobiResidual);
 	printf("Time needed for SRJ Shared: %f ms\n", sharedSRJTime);
+/*	for (int i = 0; i < Mcopies * nGrids; i++) {
+		printf("solutionJacobiShared[%d] = %f\n", i, solutionJacobiShared[i]);	
+	}
+*/
 #endif 
    
     // FREE MEMORY

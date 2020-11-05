@@ -17,10 +17,11 @@
 
 /* Perform step of relaxed Jacobi on the GPU */
 __global__
-void _jacobiGpuSRJIteration(double * x1, const double * x0, const double * rhs, const int nGrids, const double dx, const double relaxation_value)
+void _jacobiGpuSRJIteration(double * x1, const double * x0, const double * rhs, const int nGrids, const double dx, const double relaxation_value, const int Mcopies)
 {
     int iGrid = blockIdx.x * blockDim.x + threadIdx.x;
-    if (iGrid > 0 && iGrid  < (nGrids - 1)) {
+	int nTotalGrids = nGrids * Mcopies;
+    if ((iGrid % nGrids) > 0 && (iGrid % nGrids) < (nGrids - 1) && iGrid < nTotalGrids-1) {
         double leftX = x0[iGrid - 1];
         double rightX = x0[iGrid + 1];
         double centerX = x0[iGrid];
@@ -30,21 +31,21 @@ void _jacobiGpuSRJIteration(double * x1, const double * x0, const double * rhs, 
 }
 
 /* Perform SRJ on GPU with global memory with a specific level */
-double * jacobiGpuSRJ(const double * initX, const double * rhs, const int nGrids, const double * srjSchemes, const int * indexPointer, const int numSchemes, const int threadsPerBlock, const int numCycles, const int levelSRJ)
+double * jacobiGpuSRJ(const double * initX, const double * rhs, const int nGrids, const double * srjSchemes, const int * indexPointer, const int numSchemes, const int threadsPerBlock, const int numCycles, const int levelSRJ, const int Mcopies)
 {
 	/* Define/Initialize key parameters */
     double dx = 1.0 / (nGrids - 1);
-	const int nTotalGrids = nGrids;
+	const int nTotalGrids = nGrids * Mcopies;
     int nBlocks = (int)ceil(nTotalGrids / (double)threadsPerBlock);
-	double residual_before, residual_after;
+	// double residual_before, residual_after;
 	int level;
 
     /* Allocate memory on the device and copy over variables */
-    double * x0Gpu, * x1Gpu, * rhsGpu, * residualGpu;
+    double * x0Gpu, * x1Gpu, * rhsGpu;//  * residualGpu;
     cudaMalloc(&x0Gpu, sizeof(double) * nTotalGrids);
     cudaMalloc(&x1Gpu, sizeof(double) * nTotalGrids);
     cudaMalloc(&rhsGpu, sizeof(double) * nTotalGrids);
-    cudaMalloc(&residualGpu, sizeof(double) * nTotalGrids);
+    // cudaMalloc(&residualGpu, sizeof(double) * nTotalGrids);
     cudaMemcpy(x0Gpu, initX, sizeof(double) * nTotalGrids, cudaMemcpyHostToDevice);
     cudaMemcpy(x1Gpu, initX, sizeof(double) * nTotalGrids, cudaMemcpyHostToDevice);
     cudaMemcpy(rhsGpu, rhs, sizeof(double) * nTotalGrids, cudaMemcpyHostToDevice);
@@ -52,27 +53,31 @@ double * jacobiGpuSRJ(const double * initX, const double * rhs, const int nGrids
 	/* Perform SRJ cycles */
 	for (int cycle = 0; cycle < numCycles; cycle++) {
 		/* Select which level to use */
-		levelSelect(level, cycle, residual_before, residual_after, numSchemes);
+		// levelSelect(level, cycle, residual_before, residual_after, numSchemes);
+		// This level selection approach corresponds to obeying the heuristic
 		if (cycle == 0) {
 			level = 0;
 		}
-		else {
-			level = levelSRJ;
+		else if (level < 19) {
+			level = level + 1;
 		}
-    	/* Obtain residual before performing cycles */
-		residual_before = residualFastGpu(residualGpu, x0Gpu, rhsGpu, nGrids, threadsPerBlock, nBlocks);
+		else {
+			level = level - 1;
+		}
+	  	/* Obtain residual before performing cycles */
+		// residual_before = residualFastGpu(residualGpu, x0Gpu, rhsGpu, nGrids, threadsPerBlock, nBlocks);
 		/* Perform all iterations associated with a given SRJ cycle */
     	for (int relaxationParameterID = indexPointer[level]; relaxationParameterID < indexPointer[level + 1]; relaxationParameterID++) {
 			// Jacobi iteration on the GPU
-        	_jacobiGpuSRJIteration<<<nBlocks, threadsPerBlock>>>(x1Gpu, x0Gpu, rhsGpu, nGrids, dx, srjSchemes[relaxationParameterID]);
+        	_jacobiGpuSRJIteration<<<nBlocks, threadsPerBlock>>>(x1Gpu, x0Gpu, rhsGpu, nGrids, dx, srjSchemes[relaxationParameterID], Mcopies);
         	{ 
         		double * tmp = x0Gpu; x0Gpu = x1Gpu; x1Gpu = tmp;
 			}
     	}
     	/* Obtain residual after performing cycles */
-		residual_after = residualFastGpu(residualGpu, x0Gpu, rhsGpu, nGrids, threadsPerBlock, nBlocks);
+		// residual_after = residualFastGpu(residualGpu, x0Gpu, rhsGpu, nGrids, threadsPerBlock, nBlocks);
 		/* Print information */
-		printf("Cycle %d of Level %d complete: The residual is %f\n", cycle, level, residual_after);
+		// printf("Cycle %d of Level %d complete: The residual is %.15f\n", cycle, level, residual_after);
 	}
 
     /* Write solution from GPU to CPU variable */
@@ -88,11 +93,11 @@ double * jacobiGpuSRJ(const double * initX, const double * rhs, const int nGrids
 }
 
 /* Perform SRJ on GPU with global memory and heuristic for selecting the next level scheme */
-double * jacobiGpuSRJHeuristic(const double * initX, const double * rhs, const int nGrids, const double * srjSchemes, const int * indexPointer, const int numSchemes, const int threadsPerBlock, const int numCycles)
+double * jacobiGpuSRJHeuristic(const double * initX, const double * rhs, const int nGrids, const double * srjSchemes, const int * indexPointer, const int numSchemes, const int threadsPerBlock, const int numCycles, const int Mcopies)
 {
 	/* Define/Initialize key parameters */
     double dx = 1.0 / (nGrids - 1);
-	const int nTotalGrids = nGrids;
+	const int nTotalGrids = Mcopies * nGrids;
     int nBlocks = (int)ceil(nTotalGrids / (double)threadsPerBlock);
 	double residual_before, residual_after;
 	int level;
@@ -116,7 +121,7 @@ double * jacobiGpuSRJHeuristic(const double * initX, const double * rhs, const i
 		/* Perform all iterations associated with a given SRJ cycle */
     	for (int relaxationParameterID = indexPointer[level]; relaxationParameterID < indexPointer[level + 1]; relaxationParameterID++) {
 			// Jacobi iteration on the GPU
-        	_jacobiGpuSRJIteration<<<nBlocks, threadsPerBlock>>>(x1Gpu, x0Gpu, rhsGpu, nGrids, dx, srjSchemes[relaxationParameterID]);
+        	_jacobiGpuSRJIteration<<<nBlocks, threadsPerBlock>>>(x1Gpu, x0Gpu, rhsGpu, nGrids, dx, srjSchemes[relaxationParameterID], Mcopies);
         	{ 
         		double * tmp = x0Gpu; x0Gpu = x1Gpu; x1Gpu = tmp;
 			}
