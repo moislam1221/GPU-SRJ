@@ -55,7 +55,7 @@ double * jacobiGpuSRJ(const double * initX, const double * rhs, const int nGrids
 		/* Select which level to use */
 		// levelSelect(level, cycle, residual_before, residual_after, numSchemes);
 		// This level selection approach corresponds to obeying the heuristic
-		if (cycle == 0) {
+/*		if (cycle == 0) {
 			level = 0;
 		}
 		else if (level < 19) {
@@ -64,6 +64,8 @@ double * jacobiGpuSRJ(const double * initX, const double * rhs, const int nGrids
 		else {
 			level = level - 1;
 		}
+*/
+		level = levelSRJ;	
 	  	/* Obtain residual before performing cycles */
 		// residual_before = residualFastGpu(residualGpu, x0Gpu, rhsGpu, nGrids, threadsPerBlock, nBlocks);
 		/* Perform all iterations associated with a given SRJ cycle */
@@ -129,7 +131,7 @@ double * jacobiGpuSRJHeuristic(const double * initX, const double * rhs, const i
     	/* Obtain residual after performing cycles */
 		residual_after = residualFastGpu(residualGpu, x0Gpu, rhsGpu, nGrids, threadsPerBlock, nBlocks);
 		/* Print information */
-		printf("Cycle %d of Level %d complete: The residual is %f\n", cycle, level, residual_after);
+		// printf("Cycle %d of Level %d complete: The residual is %f\n", cycle, level, residual_after);
 	}
 
     /* Write solution from GPU to CPU variable */

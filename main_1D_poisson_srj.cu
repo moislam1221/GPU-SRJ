@@ -26,7 +26,7 @@
 #include "Helper/srjSchemes.h"
 
 // #define RUN_CPU_FLAG 1
-// #define RUN_GPU_FLAG 1
+#define RUN_GPU_FLAG 1
 #define RUN_SHARED_FLAG 1
 
 // Determine which header files to include based on which directives are active
@@ -37,7 +37,8 @@
 #include "jacobi-1D-gpu.h"
 #endif
 #ifdef RUN_SHARED_FLAG
-#include "jacobi-1D-shared-srj-shifted.h"
+// #include "jacobi-1D-shared-srj-shifted.h"
+#include "jacobi-1D-shared-srj-swept.h"
 #endif
 
 int main(int argc, char *argv[])
@@ -53,7 +54,7 @@ int main(int argc, char *argv[])
     setGPU(gpuToUse);
     
 	/* Initialize initial condition and rhs */
-	const int Mcopies = 2;
+	const int Mcopies = 1;
     int nGrids = nDim + 2;
     double * initX = new double[nGrids * Mcopies];
     double * rhs = new double[nGrids * Mcopies];
@@ -78,6 +79,12 @@ int main(int argc, char *argv[])
 	int indexPointer[numSchemes] = {0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0};
 	loadSRJSchemes(srjSchemes, numSchemeParams);
 	loadIndexPointer(indexPointer, numSchemes);
+    
+	/* Print parameters of the problem to screen */
+    printf("===============INFORMATION============================\n");
+    printf("Number of grid points: %d\n", nGrids);
+    printf("Threads Per Block: %d\n", threadsPerBlock);
+    printf("Number of Cycles to perform: %d\n", numCycles);
 
 	/* CPU SRJ Jacobi*/
 #ifdef RUN_CPU_FLAG
@@ -101,14 +108,14 @@ int main(int argc, char *argv[])
 	cudaEventCreate(&stop);
 	cudaEventRecord(start, 0);
  	solutionJacobiGpu = jacobiGpuSRJ(initX, rhs, nGrids, srjSchemes, indexPointer, numSchemes, threadsPerBlock, numCycles, levelSRJ, Mcopies);
- 	// solutionJacobiGpu = jacobiGpuSRJHeuristic(initX, rhs, nGrids, srjSchemes, indexPointer, numSchemes, threadsPerBlock, numCycles);
+ 	// solutionJacobiGpu = jacobiGpuSRJHeuristic(initX, rhs, nGrids, srjSchemes, indexPointer, numSchemes, threadsPerBlock, numCycles, Mcopies);
 	cudaEventRecord(stop, 0);
 	cudaEventSynchronize(stop);
 	cudaEventElapsedTime(&gpuSRJTime, start, stop);
 	gpuJacobiResidual = residual1DPoisson(solutionJacobiGpu, rhs, nGrids);
 	printf("Residual of the Jacobi GPU solution is %.15f\n", gpuJacobiResidual);
 	printf("Time needed for SRJ GPU: %f ms\n", gpuSRJTime);
-/*	for (int i = 0; i < Mcopies * nGrids; i++) {
+/*	for (int i = 0; i < nGrids; i++) {
 		printf("solutionJacobiGpu[%d] = %f\n", i, solutionJacobiGpu[i]);	
 	}
 */
@@ -120,23 +127,33 @@ int main(int argc, char *argv[])
     cudaDeviceSetSharedMemConfig(cudaSharedMemBankSizeEightByte);
     double sharedJacobiResidual;
     double * solutionJacobiShared = new double[nGrids];
-	int overlap = 0;
+	// int overlap = 0;
 	float sharedSRJTime;
 	cudaEvent_t start_shared, stop_shared;
 	cudaEventCreate(&start_shared);
 	cudaEventCreate(&stop_shared);
 	cudaEventRecord(start_shared, 0);	
-	solutionJacobiShared = jacobiSharedSRJShifted(initX, rhs, nGrids, srjSchemes, indexPointer, numSchemes, numSchemeParams, threadsPerBlock, overlap, numCycles, levelSRJ, Mcopies);
+	// solutionJacobiShared = jacobiSharedSRJShifted(initX, rhs, nGrids, srjSchemes, indexPointer, numSchemes, numSchemeParams, threadsPerBlock, overlap, numCycles, levelSRJ, Mcopies);
+    
+	double * initXs = new double[32];
+    double * rhss = new double[32];
+	for (int iGrid = 0; iGrid < nGrids; ++iGrid) {
+		initXs[iGrid] = 1.0f;
+		rhss[iGrid] = 1.0f;
+	}
+
+    solutionJacobiShared = jacobiGpuSwept(initXs, rhss, nGrids-2, numCycles, threadsPerBlock, srjSchemes, indexPointer, numSchemes, numSchemeParams, levelSRJ);
 	cudaEventRecord(stop_shared, 0);	
 	cudaEventSynchronize(stop_shared);
 	cudaEventElapsedTime(&sharedSRJTime, start_shared, stop_shared);
 	sharedJacobiResidual = residual1DPoisson(solutionJacobiShared, rhs, nGrids);
+	double sharedJacobiResidual2 = Residual(solutionJacobiShared, rhs, nGrids);
 	printf("Residual of the Jacobi Shared solution is %.15f\n", sharedJacobiResidual);
+	printf("Residual2 of the Jacobi Shared solution is %.15f\n", sharedJacobiResidual2);
 	printf("Time needed for SRJ Shared: %f ms\n", sharedSRJTime);
-/*	for (int i = 0; i < Mcopies * nGrids; i++) {
-		printf("solutionJacobiShared[%d] = %f\n", i, solutionJacobiShared[i]);	
+	for (int i = 0; i < nGrids-2; i++) {
+		printf("solutionJacobiGpu[%d] = %f, %f\n", i, solutionJacobiGpu[i], solutionJacobiShared[i]);	
 	}
-*/
 #endif 
    
     // FREE MEMORY

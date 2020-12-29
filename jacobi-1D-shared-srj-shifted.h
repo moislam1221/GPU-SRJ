@@ -42,7 +42,7 @@ void __jacobiUpdateKernelSRJ(const int nGrids, const int nSub, const int OVERLAP
 	for (int relaxationParameterID = indexPointerGpu[level]; relaxationParameterID < indexPointerGpu[level+1]; relaxationParameterID++) {
         int i = threadIdx.x + 1;
     	int I = i + (blockDim.x - OVERLAP) * (blockIdx.x % blocksPerDomain) + nGrids * (blockIdx.x / blocksPerDomain);
-        if (I < Mcopies * nGrids-1 && I < nGrids * (1 + blockIdx.x/blocksPerDomain) - 1) {
+		if (I < Mcopies * nGrids-1 && I < nGrids * (1 + blockIdx.x/blocksPerDomain) - 1) {
             double leftX = x0[i-1];
             double rightX = x0[i+1];
             double rhs = x2[i];
@@ -69,7 +69,7 @@ void __jacobiSharedToGlobal(double * x1Gpu, const int nPerSubdomain, const int n
 	int numIters = indexPointerGpu[level+1] - indexPointerGpu[level];
 
 	/* Transfer values from shared memory to global memory */
-    if ((I+1) < Mcopies * nGrids - 1 && (I+1) < nGrids * (1 + blockIdx.x/blocksPerDomain) - 1) {
+/*    if ((I+1) < Mcopies * nGrids - 1 && (I+1) < nGrids * (1 + blockIdx.x/blocksPerDomain) - 1) {
 		if ((numIters % 2) == 0) {
 			x1Gpu[I+1] = sharedMemory[i+1];
 		}
@@ -77,6 +77,42 @@ void __jacobiSharedToGlobal(double * x1Gpu, const int nPerSubdomain, const int n
 			x1Gpu[I+1] = sharedMemory[i+1 + nPerSubdomain];
 		}
     }
+*/
+
+	/* Transfer values from shared memory to global memory (accounts for overlapping subdomains) */
+    if ((I+1) < Mcopies * nGrids && (I+1) < nGrids * (1 + blockIdx.x/blocksPerDomain) - 1) {
+        if (blockIdx.x % blocksPerDomain == 0) {
+            if (threadIdx.x <= blockDim.x - 1 - OVERLAP/2) {
+                if ((numIters % 2) == 0) {
+                    x1Gpu[I+1] = sharedMemory[i+1];
+                }
+                else {
+                    x1Gpu[I+1] = sharedMemory[i+1 + nPerSubdomain];
+                }
+            }
+        }
+        else if (blockIdx.x % blocksPerDomain == blocksPerDomain - 1) {
+            if (threadIdx.x >= OVERLAP/2) {
+	            if ((numIters % 2) == 0) {
+                    x1Gpu[I+1] = sharedMemory[i+1];
+                }
+                else {
+                    x1Gpu[I+1] = sharedMemory[i+1 + nPerSubdomain];
+                }
+            }
+        }
+        else {
+            if (threadIdx.x >= OVERLAP/2 && threadIdx.x <= blockDim.x - 1 - OVERLAP/2) {
+                if ((numIters % 2) == 0) {
+                    x1Gpu[I+1] = sharedMemory[i+1];
+                }
+                else {
+                    x1Gpu[I+1] = sharedMemory[i+1 + nPerSubdomain];
+                }
+            }
+        } 
+    }
+
 }
 
 /* Function to perform one hierarchichal cycle */
@@ -300,6 +336,21 @@ void _jacobiUpdateSRJShifted(double * x1Gpu, const double * x0Gpu, const double 
 	__jacobiSharedToGlobalShifted(x1Gpu, nPerSubdomain, nGrids, indexPointerGpu, level, OVERLAP, blocksPerDomain, Mcopies);
 }
 
+/* Perform step of relaxed Jacobi on the GPU */
+__global__
+void _jacobiGpuSRJIteration(double * x1, const double * x0, const double * rhs, const int nGrids, const double dx, const double relaxation_value, const int Mcopies)
+{
+	int iGrid = blockIdx.x * blockDim.x + threadIdx.x;
+	int nTotalGrids = nGrids * Mcopies;
+	if ((iGrid % nGrids) > 0 && (iGrid % nGrids) < (nGrids - 1) && iGrid < nTotalGrids - 1) {
+		double leftX = x0[iGrid - 1];
+		double rightX = x0[iGrid + 1];
+		double centerX = x0[iGrid];
+		x1[iGrid] = jacobi1DPoissonRelaxed(leftX, centerX, rightX, rhs[iGrid], dx, relaxation_value);
+	}
+	__syncthreads();
+}
+
 /* SRJ with Shared Memory Implementation */
 double * jacobiSharedSRJShifted(const double * initX, const double * rhs, const int nGrids, const double * srjSchemes, const int * indexPointer, const int numSchemes, const int numSchemeParams, const int threadsPerBlock, int OVERLAP, const int numCycles, const int levelSRJ, const int Mcopies)
 {
@@ -309,12 +360,15 @@ double * jacobiSharedSRJShifted(const double * initX, const double * rhs, const 
 	/* Total number of grid points */
 	const int nTotalGrids = nGrids * Mcopies;
 
-    /* Allocate GPU memory and copy arrays */
-    double * x0Gpu, * x1Gpu, * rhsGpu; // * residualGpu;
+	/* Compute dx */
+    const double dx = 1.0 / (nGrids - 1);
+    
+	/* Allocate GPU memory and copy arrays */
+    double * x0Gpu, * x1Gpu, * rhsGpu, * residualGpu;
     cudaMalloc(&x0Gpu, sizeof(double) * nTotalGrids);
     cudaMalloc(&x1Gpu, sizeof(double) * nTotalGrids);
     cudaMalloc(&rhsGpu, sizeof(double) * nTotalGrids);
-    // cudaMalloc(&residualGpu, sizeof(double) * nGrids);
+    cudaMalloc(&residualGpu, sizeof(double) * nGrids);
     cudaMemcpy(x0Gpu, initX, sizeof(double) * nTotalGrids, cudaMemcpyHostToDevice);
     cudaMemcpy(x1Gpu, initX, sizeof(double) * nTotalGrids, cudaMemcpyHostToDevice);
     cudaMemcpy(rhsGpu, rhs, sizeof(double) * nTotalGrids, cudaMemcpyHostToDevice);
@@ -328,6 +382,7 @@ double * jacobiSharedSRJShifted(const double * initX, const double * rhs, const 
     cudaMemcpy(indexPointerGpu, indexPointer, sizeof(int) * numSchemes, cudaMemcpyHostToDevice);
     
 	/* Number of blocks necessary */
+	OVERLAP = 0;
     const int blocksPerDomain = ceil(((double)nGrids-2.0-(double)OVERLAP) / ((double)threadsPerBlock-(double)OVERLAP));
 	const int numBlocks = blocksPerDomain * Mcopies;
 
@@ -336,9 +391,10 @@ double * jacobiSharedSRJShifted(const double * initX, const double * rhs, const 
     
 	/* Initialize level */
 	int level = levelSRJ;
+	int levelGlobal = 22;
 
 	/* Initialize residual variables */
-	// double residual_after;
+	double residual_before, residual_after;
 
 	/* Perform cycles of hierarchical SRJ */ 
     for (int cycle = 0; cycle < numCycles; cycle++) {
@@ -351,17 +407,34 @@ double * jacobiSharedSRJShifted(const double * initX, const double * rhs, const 
 		}
 		/* Swap pointers */
 		double * tmp = x1Gpu; x1Gpu = x0Gpu; x0Gpu = tmp;
-		/* Obtain residual after performing cycles of SRJ */
-		// residual_after = residualFastGpu(residualGpu, x0Gpu, rhsGpu, nGrids, threadsPerBlock, blocksPerDomain);
-		/* Set the subsequent levels to levelSRJ */
-		// level = levelSRJ;
-		/* Print info */
-		// printf("The residual after cycle %d where we applied SRJ level %d is %.15f\n", cycle, level, residual_after);
-    }
+		/* Apply global memory step */
+		if ((cycle % 10 == 0) && (cycle > 0)) {
+			/* Obtain residual before performing global cycles */
+		//	residual_before = residualFastGpu(residualGpu, x0Gpu, rhsGpu, nGrids, threadsPerBlock, blocksPerDomain);
+		//	for (int relaxationParameterID = indexPointer[levelGlobal]; relaxationParameterID < indexPointer[levelGlobal + 1]; relaxationParameterID++) {
+		//		_jacobiGpuSRJIteration<<<numBlocks, threadsPerBlock>>>(x1Gpu, x0Gpu, rhsGpu, nGrids, dx, srjSchemes[relaxationParameterID], Mcopies);
+		//		{
+		//			double * tmp2 = x0Gpu; x0Gpu = x1Gpu; x1Gpu = tmp2;
+		//		}
+		//	}
+			/* Obtain residual after performing cycles of SRJ */
+			residual_after = residualFastGpu(residualGpu, x0Gpu, rhsGpu, nGrids, threadsPerBlock, blocksPerDomain);
+		}	
+		/* Select which level to use at next global memory step */
+		if ((cycle % 10 == 0) && (cycle > 0)) {
+		//	levelSelect(levelGlobal, cycle, residual_before, residual_after, numSchemes);
+			/* Print info */
+			printf("The residual after cycle %d where we applied SRJ level %d (global level %d) is %.15f\n", cycle, level, levelGlobal, residual_after);
+		}
+   }
 
 	/* Copy solution to the CPU */
     double * solution = new double[nTotalGrids];
     cudaMemcpy(solution, x0Gpu, sizeof(double) * nTotalGrids, cudaMemcpyDeviceToHost);
+/*	for (int i = 0; i < nGrids; i++) {
+		printf("solution[%d] = %f\n", i, solution[i]);
+	}
+*/
 
     /* Clean up */
     cudaFree(x0Gpu);
