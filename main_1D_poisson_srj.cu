@@ -25,7 +25,7 @@
 #include "Helper/setGPU.h"
 #include "Helper/srjSchemes.h"
 
-// #define RUN_CPU_FLAG 1
+#define RUN_CPU_FLAG 1
 #define RUN_GPU_FLAG 1
 #define RUN_SHARED_FLAG 1
 
@@ -37,14 +37,13 @@
 #include "jacobi-1D-gpu.h"
 #endif
 #ifdef RUN_SHARED_FLAG
-// #include "jacobi-1D-shared-srj-shifted.h"
 #include "jacobi-1D-shared-srj-swept.h"
 #endif
 
 int main(int argc, char *argv[])
 {
     /* Inputs and Settings */
-    const int nDim = atoi(argv[1]); 
+    const int nGrids = atoi(argv[1]); 
 	const int threadsPerBlock = atoi(argv[2]);
 	const int numCycles = atoi(argv[3]);
 	const int levelSRJ = atoi(argv[4]);
@@ -54,22 +53,11 @@ int main(int argc, char *argv[])
     setGPU(gpuToUse);
     
 	/* Initialize initial condition and rhs */
-	const int Mcopies = 1;
-    int nGrids = nDim + 2;
-    double * initX = new double[nGrids * Mcopies];
-    double * rhs = new double[nGrids * Mcopies];
-    int stride;
-	for (int Mcopy = 0; Mcopy < Mcopies; Mcopy++) {
-		stride = Mcopy * nGrids;
-		for (int iGrid = 0; iGrid < nGrids; ++iGrid) {
-			if (iGrid == 0 || iGrid == nGrids-1) {
-				initX[iGrid + stride] = 0.0f;
-			}
-			else {
-				initX[iGrid + stride] = 1.0f;
-			}
-			rhs[iGrid + stride] = 1.0f;
-		}
+    double * initX = new double[nGrids];
+    double * rhs = new double[nGrids];
+	for (int iGrid = 0; iGrid < nGrids; ++iGrid) {
+		initX[iGrid] = 1.0f;
+		rhs[iGrid] = 1.0f;
 	}
     
 	/* Load SRJ schemes from Python txt files */
@@ -79,7 +67,7 @@ int main(int argc, char *argv[])
 	int indexPointer[numSchemes] = {0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0};
 	loadSRJSchemes(srjSchemes, numSchemeParams);
 	loadIndexPointer(indexPointer, numSchemes);
-    
+
 	/* Print parameters of the problem to screen */
     printf("===============INFORMATION============================\n");
     printf("Number of grid points: %d\n", nGrids);
@@ -91,10 +79,14 @@ int main(int argc, char *argv[])
 	printf("===============CPU SRJ============================\n");
     double cpuJacobiResidual;
     double * solutionJacobiCpu = new double[nGrids];
-	// solutionJacobiCpu = jacobiCpuSRJ(initX, rhs, nGrids, srjSchemes, indexPointer, numSchemes, numCycles, levelSRJ);
-	solutionJacobiCpu = jacobiCpuSRJHeuristic(initX, rhs, nGrids, srjSchemes, indexPointer, numSchemes, numCycles);
+	solutionJacobiCpu = jacobiCpuSRJ(initX, rhs, nGrids, srjSchemes, indexPointer, numSchemes, numCycles, levelSRJ);
+	// solutionJacobiCpu = jacobiCpuSRJHeuristic(initX, rhs, nGrids, srjSchemes, indexPointer, numSchemes, numCycles);
 	cpuJacobiResidual = residual1DPoisson(solutionJacobiCpu, rhs, nGrids);
-	printf("Residual of the Jacobi CPU solution is %f\n", cpuJacobiResidual);
+	printf("Residual of the Jacobi CPU solution is %.15f\n", cpuJacobiResidual);
+/*	for (int i = 0; i < nGrids; i++) {
+		printf("solutionJacobiCpu[%d] = %f\n", i, solutionJacobiCpu[i]);	
+	}
+*/
 #endif 
 
 	/* GPU SRJ Jacobi */
@@ -107,8 +99,8 @@ int main(int argc, char *argv[])
 	cudaEventCreate(&start);
 	cudaEventCreate(&stop);
 	cudaEventRecord(start, 0);
- 	solutionJacobiGpu = jacobiGpuSRJ(initX, rhs, nGrids, srjSchemes, indexPointer, numSchemes, threadsPerBlock, numCycles, levelSRJ, Mcopies);
- 	// solutionJacobiGpu = jacobiGpuSRJHeuristic(initX, rhs, nGrids, srjSchemes, indexPointer, numSchemes, threadsPerBlock, numCycles, Mcopies);
+ 	solutionJacobiGpu = jacobiGpuSRJ(initX, rhs, nGrids, srjSchemes, indexPointer, numSchemes, threadsPerBlock, numCycles, levelSRJ);
+ 	// solutionJacobiGpu = jacobiGpuSRJHeuristic(initX, rhs, nGrids, srjSchemes, indexPointer, numSchemes, threadsPerBlock, numCycles);
 	cudaEventRecord(stop, 0);
 	cudaEventSynchronize(stop);
 	cudaEventElapsedTime(&gpuSRJTime, start, stop);
@@ -133,26 +125,15 @@ int main(int argc, char *argv[])
 	cudaEventCreate(&start_shared);
 	cudaEventCreate(&stop_shared);
 	cudaEventRecord(start_shared, 0);	
-	// solutionJacobiShared = jacobiSharedSRJShifted(initX, rhs, nGrids, srjSchemes, indexPointer, numSchemes, numSchemeParams, threadsPerBlock, overlap, numCycles, levelSRJ, Mcopies);
-    
-	double * initXs = new double[32];
-    double * rhss = new double[32];
-	for (int iGrid = 0; iGrid < nGrids; ++iGrid) {
-		initXs[iGrid] = 1.0f;
-		rhss[iGrid] = 1.0f;
-	}
-
-    solutionJacobiShared = jacobiGpuSwept(initXs, rhss, nGrids-2, numCycles, threadsPerBlock, srjSchemes, indexPointer, numSchemes, numSchemeParams, levelSRJ);
+    solutionJacobiShared = jacobiGpuSwept(initX, rhs, nGrids, numCycles, threadsPerBlock, srjSchemes, indexPointer, numSchemes, numSchemeParams, levelSRJ);
 	cudaEventRecord(stop_shared, 0);	
 	cudaEventSynchronize(stop_shared);
 	cudaEventElapsedTime(&sharedSRJTime, start_shared, stop_shared);
 	sharedJacobiResidual = residual1DPoisson(solutionJacobiShared, rhs, nGrids);
-	double sharedJacobiResidual2 = Residual(solutionJacobiShared, rhs, nGrids);
 	printf("Residual of the Jacobi Shared solution is %.15f\n", sharedJacobiResidual);
-	printf("Residual2 of the Jacobi Shared solution is %.15f\n", sharedJacobiResidual2);
 	printf("Time needed for SRJ Shared: %f ms\n", sharedSRJTime);
-	for (int i = 0; i < nGrids-2; i++) {
-		printf("solutionJacobiGpu[%d] = %f, %f\n", i, solutionJacobiGpu[i], solutionJacobiShared[i]);	
+	for (int i = 0; i < nGrids; i++) {
+		printf("solutionJacobiGpu[%d] = %f, %f, %f\n", i, solutionJacobiCpu[i], solutionJacobiGpu[i], solutionJacobiShared[i]);	
 	}
 #endif 
    

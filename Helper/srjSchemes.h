@@ -1,7 +1,7 @@
 void loadSRJSchemes(double * srjSchemes, const int numSchemeParams)  
 {
 	// Load the SRJ Schemes txt files from Python
-	std::ifstream srjSchemeParametersFile("srjSchemeParameters.txt");
+	std::ifstream srjSchemeParametersFile("Helper/srjSchemeParameters.txt");
 	for (int i = 0; i < numSchemeParams; i++) {
 		srjSchemeParametersFile >> srjSchemes[i];
 	}
@@ -12,7 +12,7 @@ void loadIndexPointer(int * indexPointer, const int numSchemes)
 	// Load the size of schemes txt files from Python
 	double * sizeOfSchemeDouble = new double[numSchemes];
 	int * sizeOfScheme = new int[numSchemes];
-	std::ifstream sizeOfSchemeFile("sizeOfScheme.txt");
+	std::ifstream sizeOfSchemeFile("Helper/sizeOfScheme.txt");
 	for (int i = 0; i < numSchemes; i++) {
 		sizeOfSchemeFile >> sizeOfSchemeDouble[i];
 		sizeOfScheme[i] = int(sizeOfSchemeDouble[i]);

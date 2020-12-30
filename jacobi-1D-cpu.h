@@ -17,37 +17,39 @@
 
 #define PI 3.14159265358979323
 
+/* Perform one Jacobi update step on the CPU */
+void jacobiCpuSRJIteration(double * x1, const double * x0, const double * rhs, const int nGrids, const double dx, const double relaxation_value)
+{
+	double leftX, rightX, centerX;
+	for (int iGrid = 0; iGrid < nGrids; ++iGrid) {
+		/* Incorporate BCs for edgemost DOFs */
+    	leftX = (iGrid > 0) ? x0[iGrid - 1] : 0.0f; 
+        rightX = (iGrid < nGrids - 1) ? x0[iGrid + 1] : 0.0f;
+        centerX = x0[iGrid];
+        x1[iGrid] = jacobi1DPoissonRelaxed(leftX, centerX, rightX, rhs[iGrid], dx, relaxation_value);
+	}
+}
+
 /* Perform SRJ with a specific level for all cycles */
 double * jacobiCpuSRJ(const double * initX, const double * rhs, const int nGrids, const double * srjSchemes, const int * indexPointer, const int numSchemes, const int numCycles, const int levelSRJ)
 {
 	/* Instantiate variables */
-    double dx = 1.0 / (nGrids - 1);
+    double dx = 1.0 / (nGrids + 1);
     double * x0 = new double[nGrids];
     double * x1 = new double[nGrids];
     memcpy(x0, initX, sizeof(double) * nGrids);
     memcpy(x1, initX, sizeof(double) * nGrids);
-	double leftX, rightX, centerX;
     double residual_after; 
-	int level;
+	int level = levelSRJ;
 
 	/* Perform SRJ Cycles */
 	for (int cycle = 0; cycle < numCycles; cycle++) {
-		/* Select the next level scheme to use */
-		if (cycle == 0) {
-			level = 0;
-		}
-		else {
-			level = levelSRJ;
-		}
 		/* Perform all iterations associated with SRJ cycle on all DOFs */
     	for (int relaxationParameterID = indexPointer[level]; relaxationParameterID < indexPointer[level+1]; relaxationParameterID++) {
-        	for (int iGrid = 1; iGrid < nGrids-1; ++iGrid) {
-            	leftX = x0[iGrid - 1];
-            	rightX = x0[iGrid + 1];
-				centerX = x0[iGrid];
-            	x1[iGrid] = jacobi1DPoissonRelaxed(leftX, centerX, rightX, rhs[iGrid], dx, srjSchemes[relaxationParameterID]);
+			jacobiCpuSRJIteration(x1, x0, rhs, nGrids, dx, srjSchemes[relaxationParameterID]);
+			{
+        		double * tmp = x0; x0 = x1; x1 = tmp;
 			}
-        	double * tmp = x0; x0 = x1; x1 = tmp;
 		}
 		/* Compute the residual afterwards */
 		residual_after = residual1DPoisson(x0, rhs, nGrids);
@@ -63,12 +65,11 @@ double * jacobiCpuSRJ(const double * initX, const double * rhs, const int nGrids
 double * jacobiCpuSRJHeuristic(const double * initX, const double * rhs, const int nGrids, const double * srjSchemes, const int * indexPointer, const int numSchemes, const int numCycles)
 {
 	/* Instantiate variables */
-    double dx = 1.0 / (nGrids - 1);
+    double dx = 1.0 / (nGrids + 1);
     double * x0 = new double[nGrids];
     double * x1 = new double[nGrids];
     memcpy(x0, initX, sizeof(double) * nGrids);
     memcpy(x1, initX, sizeof(double) * nGrids);
-	double leftX, rightX, centerX;
     double residual_before, residual_after; 
 	int level;
 
@@ -80,13 +81,10 @@ double * jacobiCpuSRJHeuristic(const double * initX, const double * rhs, const i
 		residual_before = residual1DPoisson(x0, rhs, nGrids);
 		/* Perform all iterations associated with SRJ cycle on all DOFs */
     	for (int relaxationParameterID = indexPointer[level]; relaxationParameterID < indexPointer[level+1]; relaxationParameterID++) {
-        	for (int iGrid = 1; iGrid < nGrids-1; ++iGrid) {
-            	leftX = x0[iGrid - 1];
-            	rightX = x0[iGrid + 1];
-				centerX = x0[iGrid];
-            	x1[iGrid] = jacobi1DPoissonRelaxed(leftX, centerX, rightX, rhs[iGrid], dx, srjSchemes[relaxationParameterID]);
+			jacobiCpuSRJIteration(x1, x0, rhs, nGrids, dx, srjSchemes[relaxationParameterID]);
+        	{
+				double * tmp = x0; x0 = x1; x1 = tmp;
 			}
-        	double * tmp = x0; x0 = x1; x1 = tmp;
 		}
 		/* Compute the residual afterwards */
 		residual_after = residual1DPoisson(x0, rhs, nGrids);
@@ -99,6 +97,7 @@ double * jacobiCpuSRJHeuristic(const double * initX, const double * rhs, const i
 }
 
 /* Perform Jacobi iterations for prescribed number of iterations */
+/*
 double * jacobiCpu(const double * initX, const double * rhs, const int nGrids, const int nIters)
 {
     double dx = 1.0 / (nGrids - 1);
@@ -119,8 +118,10 @@ double * jacobiCpu(const double * initX, const double * rhs, const int nGrids, c
     delete[] x1;
     return x0;
 }
+*/
 
 /* Perform Jacobi iterations until a prescribed tolerance is reached */
+/*
 int jacobiCpuIterationCountResidual(const double * initX, const double * rhs, int nGrids, double TOL)
 {
     double dx = 1.0 / (nGrids - 1);
@@ -150,3 +151,4 @@ int jacobiCpuIterationCountResidual(const double * initX, const double * rhs, in
     delete[] x1;
     return nIters;
 }
+*/

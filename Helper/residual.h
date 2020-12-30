@@ -11,15 +11,10 @@ double residual1DPoisson(const double * solution, const double * rhs, int nGrids
     double leftX, centerX, rightX, residualContributionFromRow;
 
     for (int iGrid = 0; iGrid < nGrids; iGrid++) {
-        if (iGrid == 0 || iGrid == nGrids-1) {
-            residualContributionFromRow = 0.0;
-        }
-        else {
-            leftX = solution[iGrid - 1];
-            centerX = solution[iGrid];
-            rightX = solution[iGrid + 1];
-            residualContributionFromRow = normFromRow(leftX, centerX, rightX, rhs[iGrid], dx);
-        }
+        leftX = (iGrid > 0) ? solution[iGrid - 1] : 0.0f;
+        centerX = solution[iGrid];
+        rightX = (iGrid < nGrids) ? solution[iGrid + 1] : 0.0f;
+        residualContributionFromRow = normFromRow(leftX, centerX, rightX, rhs[iGrid], dx);
         residual = residual + residualContributionFromRow * residualContributionFromRow;
 	}
 
@@ -36,15 +31,10 @@ void residual1DPoissonGPU(double * residualGpu, const double * solution, const d
     int index = blockIdx.x * blockDim.x + threadIdx.x;
     int stride = blockDim.x * gridDim.x;
     for (int i = index; i < nGrids; i += stride) {
-        if (i == 0 || i == nGrids-1) {
-            residualContributionFromRow = 0.0;
-        }
-        else {
-            leftX = solution[i - 1];
-            centerX = solution[i];
-            rightX = solution[i + 1];
-            residualContributionFromRow = normFromRow(leftX, centerX, rightX, rhs[i], dx);
-        }
+        leftX = (i > 0) ? solution[i - 1] : 0.0f;
+        centerX = solution[i];
+        rightX = (i < nGrids) ? solution[i + 1] : 0.0f;
+        residualContributionFromRow = normFromRow(leftX, centerX, rightX, rhs[i], dx);
         residualGpu[i] = residualContributionFromRow * residualContributionFromRow;
     }
     __syncthreads();
